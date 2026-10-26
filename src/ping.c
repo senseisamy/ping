@@ -1,8 +1,54 @@
 #include "ping.h"
 
+extern struct argp argp_setup;
+
+ping_stats stats = {0};
+
 void exit_error(char* error_msg) {
     dprintf(STDERR_FILENO, "ft_ping error: %s\n", error_msg);
     exit(1);
+}
+
+void sigint_handler(int sig_num) {
+    (void)sig_num;
+
+    printf("--- %s ping statistics ---\n", stats.destination); 
+
+    struct timeval end;
+    gettimeofday(&end, NULL);
+    size_t time_passed = (end.tv_sec - stats.start.tv_sec) * 1000 + (end.tv_usec - stats.start.tv_usec) / 1000;
+
+    printf(
+        "%ld packets transmitted, %ld packets received, %g%% packet loss, time %ldms\n",
+        stats.packets_transmitted, stats.packets_received,
+        (1.0 - (float)stats.packets_received / (float)stats.packets_transmitted) * 100,
+        time_passed
+    );
+
+    if (stats.packets_received > 0) {
+        double avg_rtt = stats.sum_rtt / stats.packets_received;
+        double avg_rtt_sq = stats.sum_rtt_sq / stats.packets_received;
+        // standard deviation
+        double mdev = sqrt(avg_rtt_sq - (avg_rtt * avg_rtt));
+
+        printf(
+            "rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
+            stats.min_rtt, avg_rtt, stats.max_rtt, mdev
+        );
+    }
+
+    exit(0);
+}
+
+void update_stats(double rtt) {
+    stats.sum_rtt += rtt;
+    stats.sum_rtt_sq += (rtt * rtt);
+
+    if (rtt > stats.max_rtt)
+        stats.max_rtt = rtt;
+
+    if (rtt < stats.min_rtt)
+        stats.min_rtt = rtt;
 }
 
 // RFC 792
@@ -64,7 +110,7 @@ void create_data(char data[64], icmp_header* header) {
     data_p->checksum = calculate_checksum(data);
 }
 
-void receive_reply(int sock, char data[64], icmp_header* header) {
+void receive_reply(int sock, icmp_header* header, struct arguments* args) {
     char recv_buffer[1024];
     struct sockaddr_in sender_addr;
     socklen_t saddr_len = sizeof(sender_addr);
@@ -77,7 +123,6 @@ void receive_reply(int sock, char data[64], icmp_header* header) {
         ssize_t bytes = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&sender_addr, &saddr_len);
 
         if (bytes < 0) {
-            printf("recv timeout\n");
             break;
         }
 
@@ -97,10 +142,23 @@ void receive_reply(int sock, char data[64], icmp_header* header) {
         if (icmp->identifier != header->identifier) // not the reply to our echo
             continue;
 
-        //TODO: calculate time
-        (void)data;
+        stats.packets_received += 1;
 
-        printf("received a reply!\n");
+        // calculate time
+        // the timestamp is located after the ICMP header
+        struct timeval* sent_time = (struct timeval*)(recv_buffer + ip_header_length + sizeof(icmp_header));
+        struct timeval receive_time;
+        gettimeofday(&receive_time, NULL);
+        double rtt = (receive_time.tv_sec - sent_time->tv_sec) * 1000.0 + (receive_time.tv_usec - sent_time->tv_usec) / 1000.0;
+
+        update_stats(rtt);
+
+        uint8_t ttl = recv_buffer[8];
+
+        if (args->dns_resolved)
+            printf("64 bytes from %s (%s): icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, args->ip, icmp->sequence, ttl, rtt);
+        else
+            printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, icmp->sequence, ttl, rtt);
 
         break;
     }
@@ -108,13 +166,15 @@ void receive_reply(int sock, char data[64], icmp_header* header) {
 
 // usage: ft_ping [options] ip
 int main(int ac, char **av) {
-    uint32_t options = 0;
-    struct sockaddr_in ip;
-    char address_str[INET_ADDRSTRLEN];
+    struct sockaddr_in ip = {0};
 
-    parse_argv(ac, av, &options, &ip, address_str);
+    struct arguments args = {0};
+    argp_parse(&argp_setup, ac, av, 0, 0, &args);
 
-    printf("ip address: %s\n", address_str);
+    stats.destination = args.destination;
+
+    ip.sin_family = AF_INET;
+    inet_pton(AF_INET, args.ip, &ip.sin_addr);
 
     int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0)
@@ -122,6 +182,16 @@ int main(int ac, char **av) {
 
     icmp_header header = create_icmp_header();
     char data[64];
+
+    struct timeval start, end;
+    const size_t sleeptime = 1000000; // 1 000 000 microseconds = 1 second
+
+    gettimeofday(&stats.start, NULL);
+    stats.min_rtt = DBL_MAX;
+
+    signal(SIGINT, sigint_handler);
+
+    printf("PING %s (%s) 56 bytes of data.\n", args.destination, args.ip);
 
     while (1) {
         create_data(data, &header);
@@ -131,13 +201,20 @@ int main(int ac, char **av) {
             exit_error("failed to send packet\n");
         }
 
-        printf("succesfully sent packet\n");
+        stats.packets_transmitted += 1;
 
-        receive_reply(sock, data, &header);
+        gettimeofday(&start, NULL);
+
+        receive_reply(sock, &header, &args);
+
+        gettimeofday(&end, NULL);
+
+        size_t elapsed_time = (end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec);
+
+        if (elapsed_time < sleeptime)
+            usleep(sleeptime - elapsed_time);
 
         ++header.sequence;
-
-        sleep(1);
     }
     
     return 0;
