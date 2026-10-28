@@ -155,7 +155,9 @@ void receive_reply(int sock, icmp_header* header, struct arguments* args) {
 
         uint8_t ttl = recv_buffer[8];
 
-        if (args->dns_resolved)
+        if (args->flood)
+            putchar('\b');
+        else if (args->dns_resolved)
             printf("64 bytes from %s (%s): icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, args->ip, icmp->sequence, ttl, rtt);
         else
             printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, icmp->sequence, ttl, rtt);
@@ -184,7 +186,11 @@ int main(int ac, char **av) {
     char data[64];
 
     struct timeval start, end;
-    const size_t sleeptime = 1000000; // 1 000 000 microseconds = 1 second
+    size_t sleeptime = 1000000; // 1 000 000 microseconds = 1 second
+    if (args.flood)
+        sleeptime = 0;
+    if (args.interval > 0.0)
+        sleeptime = args.interval;
 
     gettimeofday(&stats.start, NULL);
     stats.min_rtt = DBL_MAX;
@@ -200,6 +206,9 @@ int main(int ac, char **av) {
             close(sock);
             exit_error("failed to send packet\n");
         }
+
+        if (args.flood)
+            putchar('.');
 
         stats.packets_transmitted += 1;
 

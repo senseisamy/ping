@@ -11,6 +11,7 @@
 # include <signal.h>
 # include <float.h>
 # include <math.h>
+# include <stdbool.h>
 
 # include <netinet/in.h>
 # include <arpa/inet.h>
@@ -22,10 +23,12 @@
 # define OPT_VERBOSE (1 << 0)
 
 struct arguments {
-    int verbose;
+    bool verbose;
     char* destination;
     char ip[INET_ADDRSTRLEN]; // after domain resolution
     int dns_resolved;
+    size_t interval;
+    bool flood;
 };
 
 typedef struct icmp_header {

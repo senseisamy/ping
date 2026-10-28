@@ -7,6 +7,8 @@ static char args_doc[] = "<Destination>";
 static struct argp_option options[] = {
   {"verbose", 'v', 0, 0, "Verbose output", 0},
   {"flood", 'f', 0, 0, "Flood ping", 0},
+  {"interval", 'i', "INTERVAL", 0, "Seconds between sending each packet", 0},
+  {"flood", 'f', 0, 0, "Flood ping", 0},
   {0}
 };
 
@@ -41,7 +43,16 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
 
     switch (key) {
         case 'v':
-            arguments->verbose = 1;
+            arguments->verbose = true;
+            break;
+        case 'i':
+            float interval_s = atof(arg);
+            if (interval_s < 0.002)
+                argp_error(state, "cannot flood, minimal interval for user must be >= 2 ms, use -i 0.002 (or higher)");
+            arguments->interval = interval_s * 1000000;
+            break;
+        case 'f':
+            arguments->flood = true;
             break;
         case ARGP_KEY_ARG:
             if (state->arg_num >= 1) // too many arguments
