@@ -29,6 +29,7 @@ struct arguments {
     int dns_resolved;
     size_t interval;
     bool flood;
+    size_t preload;
 };
 
 typedef struct icmp_header {

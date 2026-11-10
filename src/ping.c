@@ -16,13 +16,12 @@ void sigint_handler(int sig_num) {
 
     struct timeval end;
     gettimeofday(&end, NULL);
-    size_t time_passed = (end.tv_sec - stats.start.tv_sec) * 1000 + (end.tv_usec - stats.start.tv_usec) / 1000;
+    //size_t time_passed = (end.tv_sec - stats.start.tv_sec) * 1000 + (end.tv_usec - stats.start.tv_usec) / 1000;
 
     printf(
-        "%ld packets transmitted, %ld packets received, %g%% packet loss, time %ldms\n",
+        "%ld packets transmitted, %ld packets received, %g%% packet loss\n",
         stats.packets_transmitted, stats.packets_received,
-        (1.0 - (float)stats.packets_received / (float)stats.packets_transmitted) * 100,
-        time_passed
+        (1.0 - (float)stats.packets_received / (float)stats.packets_transmitted) * 100
     );
 
     if (stats.packets_received > 0) {
@@ -32,7 +31,7 @@ void sigint_handler(int sig_num) {
         double mdev = sqrt(avg_rtt_sq - (avg_rtt * avg_rtt));
 
         printf(
-            "rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
+            "round-trip min/avg/max/stddev = %.3f/%.3f/%.3f/%.3f ms\n",
             stats.min_rtt, avg_rtt, stats.max_rtt, mdev
         );
     }
@@ -211,6 +210,12 @@ int main(int ac, char **av) {
             putchar('.');
 
         stats.packets_transmitted += 1;
+
+        if (args.preload > 0) {
+            ++header.sequence;
+            --args.preload;
+            continue;
+        }
 
         gettimeofday(&start, NULL);
 

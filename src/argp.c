@@ -1,14 +1,15 @@
 #include "ping.h"
+#include <limits.h>
 #include <string.h>
 
 static char doc[] = "ft_ping -- a simple ping implementation";
 static char args_doc[] = "<Destination>";
 
 static struct argp_option options[] = {
-  {"verbose", 'v', 0, 0, "Verbose output", 0},
-  {"flood", 'f', 0, 0, "Flood ping", 0},
-  {"interval", 'i', "INTERVAL", 0, "Seconds between sending each packet", 0},
-  {"flood", 'f', 0, 0, "Flood ping", 0},
+  {"verbose", 'v', 0, 0, "verbose output", 0},
+  {"flood", 'f', 0, 0, "flood ping", 0},
+  {"interval", 'i', "NUMBER", 0, "wait NUMBER seconds between sending each packet", 0},
+  {"preload", 'l', "NUMBER", 0, "send NUMBER packets as fast as possible before falling into normal mode of behavior", 0},
   {0}
 };
 
@@ -40,19 +41,26 @@ int valid_ip(char* arg, char ip[INET_ADDRSTRLEN]) {
 
 static error_t parse_opt(int key, char* arg, struct argp_state* state) {
     struct arguments* arguments = state->input;
+    char* endptr;
 
     switch (key) {
         case 'v':
             arguments->verbose = true;
             break;
-        case 'i':
+        case 'i': {
             float interval_s = atof(arg);
             if (interval_s < 0.002)
                 argp_error(state, "cannot flood, minimal interval for user must be >= 2 ms, use -i 0.002 (or higher)");
             arguments->interval = interval_s * 1000000;
             break;
+        }
         case 'f':
             arguments->flood = true;
+            break;
+        case 'l':
+            arguments->preload = strtoul(arg, &endptr, 0);
+            if (*endptr || arguments->preload > INT_MAX)
+                argp_error(state, "invalid preload value (%s)", arg);
             break;
         case ARGP_KEY_ARG:
             if (state->arg_num >= 1) // too many arguments
