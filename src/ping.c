@@ -1,4 +1,9 @@
 #include "ping.h"
+#include <stddef.h>
+#include <sys/_select.h>
+#include <sys/_types/_fd_def.h>
+#include <sys/_types/_timeval.h>
+#include <sys/time.h>
 
 extern struct argp argp_setup;
 
@@ -9,9 +14,7 @@ void exit_error(char* error_msg) {
     exit(1);
 }
 
-void sigint_handler(int sig_num) {
-    (void)sig_num;
-
+void print_stats() {
     printf("--- %s ping statistics ---\n", stats.destination); 
 
     struct timeval end;
@@ -35,8 +38,23 @@ void sigint_handler(int sig_num) {
             stats.min_rtt, avg_rtt, stats.max_rtt, mdev
         );
     }
+}
+
+void sigint_handler(int sig_num) {
+    (void)sig_num;
+
+    print_stats();
 
     exit(0);
+}
+
+struct timeval usec_to_timeval(size_t usec) {
+    struct timeval time = {0};
+
+    time.tv_sec = usec / 1000000;
+    time.tv_usec = usec % 1000000;
+
+    return time;
 }
 
 void update_stats(double rtt) {
@@ -109,60 +127,67 @@ void create_data(char data[64], icmp_header* header) {
     data_p->checksum = calculate_checksum(data);
 }
 
+void send_packet(char data[64], icmp_header* header, int socket, struct sockaddr_in* ip, struct arguments* args) {
+    create_data(data, header);
+    if(sendto(socket, data, 64, 0, (struct sockaddr*)ip, sizeof(*ip)) == -1) {
+        close(socket);
+        exit_error("failed to send packet\n");
+    }
+
+    if (args->flood)
+        putchar('.');
+
+    stats.packets_transmitted += 1;
+}
+
 void receive_reply(int sock, icmp_header* header, struct arguments* args) {
     char recv_buffer[1024];
     struct sockaddr_in sender_addr;
     socklen_t saddr_len = sizeof(sender_addr);
 
-    // 1 second timeout
-    struct timeval timeout = {.tv_sec = 1, .tv_usec = 0};
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ssize_t bytes = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&sender_addr, &saddr_len);
 
-    while (1) {
-        ssize_t bytes = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&sender_addr, &saddr_len);
-
-        if (bytes < 0) {
-            break;
-        }
-
-        // we need to skip the ipv4 header to read the icmp header
-        // https://en.wikipedia.org/wiki/IPv4#Header
-        size_t ihl = recv_buffer[0] & 0b00001111;
-        // ihl counts the number of 32bits words (4 bytes) -> we need to multiply by 4 to have the total number of bytes
-        size_t ip_header_length = ihl * 4;
-
-        if ((size_t)bytes < ip_header_length + sizeof(icmp_header))
-            continue;
-
-        icmp_header* icmp = (icmp_header*)&recv_buffer[ip_header_length];
-
-        if (icmp->type != 0) // not a icmp echo reply
-            continue;
-        if (icmp->identifier != header->identifier) // not the reply to our echo
-            continue;
-
-        stats.packets_received += 1;
-
-        // calculate time
-        // the timestamp is located after the ICMP header
-        struct timeval* sent_time = (struct timeval*)(recv_buffer + ip_header_length + sizeof(icmp_header));
-        struct timeval receive_time;
-        gettimeofday(&receive_time, NULL);
-        double rtt = (receive_time.tv_sec - sent_time->tv_sec) * 1000.0 + (receive_time.tv_usec - sent_time->tv_usec) / 1000.0;
-
-        update_stats(rtt);
-
-        uint8_t ttl = recv_buffer[8];
-
-        if (args->flood)
-            putchar('\b');
-        else if (args->dns_resolved)
-            printf("64 bytes from %s (%s): icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, args->ip, icmp->sequence, ttl, rtt);
-        else
-            printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, icmp->sequence, ttl, rtt);
-
-        break;
+    if (bytes < 0) {
+        return;
     }
+
+    // we need to skip the ipv4 header to read the icmp header
+    // https://en.wikipedia.org/wiki/IPv4#Header
+    size_t ihl = recv_buffer[0] & 0b00001111;
+    // ihl counts the number of 32bits words (4 bytes) -> we need to multiply by 4 to have the total number of bytes
+    size_t ip_header_length = ihl * 4;
+
+    if ((size_t)bytes < ip_header_length + sizeof(icmp_header))
+        return; // the reply is too short to be a icmp message
+
+    icmp_header* icmp = (icmp_header*)&recv_buffer[ip_header_length];
+
+    if (icmp->type != 0)
+        return; // not a icmp echo reply
+    if (icmp->identifier != header->identifier)
+        return; // not the reply to our echo
+
+    stats.packets_received += 1;
+    header->sequence += 1;
+
+    // calculate time
+    // the timestamp is located after the ICMP header
+    struct timeval* sent_time = (struct timeval*)(recv_buffer + ip_header_length + sizeof(icmp_header));
+    struct timeval receive_time;
+    gettimeofday(&receive_time, NULL);
+    double rtt = (receive_time.tv_sec - sent_time->tv_sec) * 1000.0 + (receive_time.tv_usec - sent_time->tv_usec) / 1000.0;
+
+    update_stats(rtt);
+
+    uint8_t ttl = recv_buffer[8];
+
+    if (args->flood)
+        putchar('\b');
+    else if (args->dns_resolved)
+        printf("64 bytes from %s (%s): icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, args->ip, icmp->sequence, ttl, rtt);
+    else
+        printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%.2f ms\n", args->destination, icmp->sequence, ttl, rtt);
+
 }
 
 // usage: ft_ping [options] ip
@@ -184,12 +209,18 @@ int main(int ac, char **av) {
     icmp_header header = create_icmp_header();
     char data[64];
 
-    struct timeval start, end;
-    size_t sleeptime = 1000000; // 1 000 000 microseconds = 1 second
+    struct timeval now, next_time_send;
+    size_t sleeptime = 1000000; // 1 second
     if (args.flood)
-        sleeptime = 0;
+        sleeptime = 10000; // 10 ms
     if (args.interval > 0.0)
         sleeptime = args.interval;
+
+    struct timeval program_timeout = {0};
+    if (args.timeout > 0) {
+        gettimeofday(&program_timeout, NULL);
+        timeradd(&program_timeout, &((struct timeval){.tv_sec = args.timeout, .tv_usec = 0}), &program_timeout);
+    }
 
     gettimeofday(&stats.start, NULL);
     stats.min_rtt = DBL_MAX;
@@ -198,38 +229,59 @@ int main(int ac, char **av) {
 
     printf("PING %s (%s) 56 bytes of data.\n", args.destination, args.ip);
 
-    while (1) {
-        create_data(data, &header);
-        
-        if(sendto(sock, data, 64, 0, (struct sockaddr*)&ip, sizeof(ip)) == -1) {
-            close(sock);
-            exit_error("failed to send packet\n");
-        }
+    gettimeofday(&next_time_send, NULL); // set to 'now' so we can send immediately
 
-        if (args.flood)
-            putchar('.');
+    struct timeval interval = usec_to_timeval(sleeptime);
 
-        stats.packets_transmitted += 1;
+    bool ping_stop = false;
 
-        if (args.preload > 0) {
-            ++header.sequence;
-            --args.preload;
+    while (!ping_stop) {
+        gettimeofday(&now, NULL);
+
+        if (args.timeout > 0 && timercmp(&now, &program_timeout, >=)) {
+            ping_stop = true;
             continue;
         }
 
-        gettimeofday(&start, NULL);
+        // STEP 1: SEND IF IT'S TIME
+        if (args.preload > 0) {
+            send_packet(data, &header, sock, &ip, &args);
+            --args.preload;
+        } else if (timercmp(&now, &next_time_send, >=)) { // now is the time to send
+            send_packet(data, &header, sock, &ip, &args);
+            timeradd(&next_time_send, &interval, &next_time_send); // increase the value for the next time to send
+        }
+        // if (args.preload > 0) {
+        //     ++header.sequence;
+        //     --args.preload;
+        //     continue;
+        // }
 
-        receive_reply(sock, &header, &args);
+        // STEP 2: THE WAIT
+        struct timeval timeout;
+        if (args.preload > 0) {
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 0;
+        } else {
+            // timeout = next_time_send - now
+            timersub(&next_time_send, &now, &timeout);
+        }
 
-        gettimeofday(&end, NULL);
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        FD_SET(sock, &read_set);
 
-        size_t elapsed_time = (end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec);
+        int ready = select(sock + 1, &read_set, NULL, NULL, &timeout);
 
-        if (elapsed_time < sleeptime)
-            usleep(sleeptime - elapsed_time);
+        // STEP 3: RECEIVE
+        if (ready && FD_ISSET(sock, &read_set)) {
+            // we have a reply
+            receive_reply(sock, &header, &args);
+        }
 
-        ++header.sequence;
     }
     
+    print_stats();
+
     return 0;
 }

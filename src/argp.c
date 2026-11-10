@@ -1,6 +1,4 @@
 #include "ping.h"
-#include <limits.h>
-#include <string.h>
 
 static char doc[] = "ft_ping -- a simple ping implementation";
 static char args_doc[] = "<Destination>";
@@ -10,6 +8,7 @@ static struct argp_option options[] = {
   {"flood", 'f', 0, 0, "flood ping", 0},
   {"interval", 'i', "NUMBER", 0, "wait NUMBER seconds between sending each packet", 0},
   {"preload", 'l', "NUMBER", 0, "send NUMBER packets as fast as possible before falling into normal mode of behavior", 0},
+  {"timeout", 'w', "N", 0, "stop after N seconds", 0},
   {0}
 };
 
@@ -62,6 +61,12 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
             if (*endptr || arguments->preload > INT_MAX)
                 argp_error(state, "invalid preload value (%s)", arg);
             break;
+        case 'w':
+            arguments->timeout = strtoul(arg, &endptr, 0);
+            if (*endptr || arguments->timeout > INT_MAX)
+                argp_error(state, "invalid timeout value (%s)", arg);
+            if (arguments->timeout < 1)
+                argp_error(state, "timeout value too small (%s)", arg);
         case ARGP_KEY_ARG:
             if (state->arg_num >= 1) // too many arguments
                 argp_usage(state);

@@ -12,6 +12,8 @@
 # include <float.h>
 # include <math.h>
 # include <stdbool.h>
+# include <sys/select.h>
+# include <limits.h>
 
 # include <netinet/in.h>
 # include <arpa/inet.h>
@@ -30,6 +32,7 @@ struct arguments {
     size_t interval;
     bool flood;
     size_t preload;
+    size_t timeout;
 };
 
 typedef struct icmp_header {
